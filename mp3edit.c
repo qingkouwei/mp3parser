@@ -3,12 +3,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <error.h>
+#include <mach/error.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <iconv.h>
-#include <glob.h>
+
 // Many mp3 files format do not conform to the standard, such as the standard says that the encode should be
 // ISO-8895-1 if the byte followed that frame header is $00, but in fact, in my system, they are GBK, not
 // ISO-8895-1 (YOU SHOULD KNOW THAT I AM A CHINESE :)
@@ -71,9 +71,9 @@ static size_t gettagsize(int fd)
     return -1;
   }
 
-  if (strncmp(header.version, "\03\00", 2) != 0) {
+  /*if (strncmp(header.version, "\03\00", 2) != 0) {
     return -2;
-  }
+  }*/
 
   unsync = (header.flags & 0x80) ? 1 : 0;
   extend = (header.flags & 0x40) ? 1 : 0;    // I didn't handle extended in this version
@@ -100,7 +100,7 @@ static int doconv(char* inbuf, size_t inbytes, char* encode, char* outbuf, size_
   perror("iconv: ");
   return -1;
 }
-
+/*
 void parseold(int fd)
 {
   struct mp3id3v1 info;
@@ -128,95 +128,87 @@ void parseold(int fd)
     }
   }
 }
+*/
 
-void parse(char* filename, char* tag[], char* infoname[], int size)
+int main(int argc, char* argv[])
 {
-  int fd;
-  if ((fd = open(filename, O_RDONLY)) < 0) {
-    perror("Open File: ");
-    return;
-  }
   
+  char* tagid[] = { "TIT2", "TALB", "TPE2", "TPE1", "TCON", "TRCK", "TYER", "PRIV", "TCOM", "TCOP", "TEXT", "APIC" };
+  char* infoname[] = { "Title", "Album", "Band", "Performer", "Content Type", "Track Number", "Year", "Private Frame", "Composer", "Copyright", "Lyricst", "Picture" };
+  
+  if (argc < 2) {
+    printf("Usage: mp3edit mp3file1 mp3file2...\n");
+    return -1;
+  }
+  int fd;
+  if ((fd = open(argv[1], O_RDONLY)) < 0) {
+    perror("Open File: ");
+    return -1;
+  }
+  printf("File opened\n");
+
   size_t tagsize = gettagsize(fd);
   if (tagsize == -1) {            // The file is not an valid ID3 TAG mp3 file
-    parseold(fd);                 // assume it's the old style mp3 file, the last 128 bytes hold information
+    //parseold(fd);                 // assume it's the old style mp3 file, the last 128 bytes hold information
+    printf("has no ID3\n");
     close(fd);
-    return;
+    return -1;
   }
   if (tagsize == -2) {
     printf("ID3 but not v2.3\n");
     close(fd);
-    return;
+    return -1;
   }
-  
-  char* frame = NULL;
-  struct frameheader* header;
+  printf("tagsize = %d\n", tagsize);
+  struct frameheader header;
   int framesz = 0;
-  
-  char* buff = (char *) malloc(tagsize);
-  if (read(fd, buff, tagsize) < 0) {
-    perror("Read Error: ");
-    exit(2);
-  }
 
-  for (int i = 0; i < size; i++) {
-    if ((frame = (char*) memmem(buff, tagsize, tag[i], 4)) == NULL) {  // memmem(), search substr in memory area
-      //      printf("There is no %s\n", infoname[i]);
+  int start = 0;
+  while(start <= tagsize){
+    if (read(fd, &header, sizeof(header)) < 0) {
+      perror("Read File: ");
+      return -1;
+    }
+
+    start += sizeof(header);
+    if(start > tagsize){
+      printf("has parsed all\n");
+      return 1;
+    }
+    framesz = header.size[0]*0x100000000 + header.size[1]*0x10000 + header.size[2]*0x100 + header.size[3];
+    start+=framesz;
+
+    char* input = malloc(framesz);
+    if(read(fd, input, framesz)< 0){
+      printf("error");
+      return -1;
+    }
+    if(strncmp(header.frameid, "APIC", 4) == 0){
+      printf("The %s is:\t\t Attach Picture, size = %d\n", header.frameid, framesz);
       continue;
     }
-    
-    header = (struct frameheader* ) frame;
-    
-    framesz = header->size[0]*0x100000000 + header->size[1]*0x10000 + header->size[2]*0x100 + header->size[3];
     framesz -= 1;   // framesz include the encode of the ID, so minus the encode byte; depend on the type of the tagid.
     if (framesz <= 0) continue;
-    
-    char* encode = (*(frame += 10) == 1)? "UTF16" : "GB18030";  // The biggest problem is here, hard to know encode,so just guess
-    frame++;
+    char* encode = (*input == 1)? "UTF-16" : "GB18030";  // The biggest problem is here, hard to know encode,so just guess
 
     size_t outsize = framesz * 2;
     char* result = malloc(outsize);
     bzero(result, outsize);
 
-    if (strncmp(tag[i], "PRIV", 4) == 0) {   // PRIV's handle is a bit of special, still don't understand 
-      frame--;
+    char *temp = input+1;
+    if (strncmp(header.frameid, "PRIV", 4) == 0) {   // PRIV's handle is a bit of special, still don't understand 
       encode = "ISO-8859-1";
+      temp = input;
+      framesz +=1;
     }
-    
-    if ((doconv(frame, framesz, encode, result, outsize)) == -1) {
+  
+    if ((doconv(temp, framesz, encode, result, outsize)) == -1) {
       perror("doconv: ");
       continue;
     }
-    printf("The %s is:\t\t%s\n", infoname[i], result);
+    printf("The %s is:\t\t%s, size = %d\n", header.frameid, result, framesz);
     free(result);
   }
-  free(buff);
   close(fd);
-}
-  
-int main(int argc, char* argv[])
-{
-  glob_t globbuf;
-  char* tagid[] = { "TIT2", "TALB", "TPE2", "TPE1", "TCON", "TRCK", "TYER", "PRIV", "TCOM", "TCOP", "TEXT" };
-  char* infoname[] = { "Title", "Album", "Band", "Performer", "Content Type", "Track Number", "Year", "Private Frame", "Composer", "Copyright", "Lyricst" };
-  
-  if (argc < 2) {
-    printf("Usage: mp3edit mp3file1 mp3file2...\n");
-    return 1;
-  }
-  
-  for (int i = 1; i < argc; i++) {
-    if (glob(argv[i], GLOB_NOSORT, NULL, &globbuf) != 0) {
-      perror("Glob Error: ");
-      continue;
-    }
-    for (int j = 0; j < globbuf.gl_pathc; j++) {
-      printf("-------------------------------------------------------------\n");
-      printf("The file name is: %s\n", globbuf.gl_pathv[j]);
-      parse(globbuf.gl_pathv[j], tagid, infoname, 11);
-    }
-  }
-  globfree(&globbuf);
-}
 
-// To be Continue : The next step is to provide a tag editor.
+}
