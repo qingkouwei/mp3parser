@@ -37,6 +37,7 @@ struct tagheader {
 
 static int unsync;
 static int extend;
+static int istest;
 
 struct extheader {
   char extsize[4];
@@ -57,6 +58,125 @@ struct frameheader {
 /* Frames that allow different types of text encoding have a text encoding description byte directly after the frame size. If ISO-8859-1 is
    used, this type should be $00, if unicode is used, it should be $01. */
 
+
+struct aheader
+{
+unsigned int sync;                        //同步信息 11
+unsigned int version;                      //版本 2
+
+unsigned int layer;                           //层 2
+
+unsigned int protection;           // CRC校验 1
+
+unsigned int bitrate_index;              //位率 4
+
+unsigned int sampling_frequency;         //采样频率 2
+
+unsigned int padding;                    //帧长调节 1
+
+unsigned int private;                       //保留字 1
+
+unsigned int mode;                         //声道模式 2
+
+unsigned int modeextension;        //扩充模式 2
+
+unsigned int copyright;                           // 版权 1
+
+unsigned int original;                      //原版标志 1
+
+unsigned int emphasis;                  //强调模式 2
+};
+
+void printmp3details(unsigned int nFrames, unsigned int nSampleRate, double fAveBitRate)
+{
+    printf("MP3 details:\n");
+    printf("Frames: %d\n", nFrames);
+    printf("Sample rate: %d\n", nSampleRate);
+    printf("Ave bitrate: %0.0f\n", fAveBitRate);
+}
+
+int findFramePadding (const unsigned char ucHeaderByte)
+{
+    //get second to last bit to of the byte
+    unsigned char ucTest = ucHeaderByte & 0x02;
+    //this is then a number 0 to 15 which correspond to the bit rates in the array
+    int nFramePadded;
+    if( (unsigned int)ucTest==2 )
+    {
+        nFramePadded = 1;
+        printf("\tpadded: true");
+    }
+    else
+    {
+        nFramePadded = 0;
+        printf("\tpadded: false");
+    }
+    return nFramePadded;
+}
+
+int findMpegVersionAndLayer (const unsigned char ucHeaderByte)
+{
+    int MpegVersionAndLayer;
+    //get bits corresponding to the MPEG verison ID and the Layer
+    unsigned char ucTest = ucHeaderByte & 0x1E;
+    //we are working with MPEG 1 and Layer III
+    if(ucTest == 0x1A)
+    {
+        MpegVersionAndLayer = 1;
+        printf("\tMPEG Version 1 Layer III ");
+    }
+    else
+    {
+        MpegVersionAndLayer = 1;
+        printf("\tNot MPEG Version 1 Layer III ");
+    }
+    return MpegVersionAndLayer;
+}
+
+int findFrameBitRate (const unsigned char ucHeaderByte)
+{
+    unsigned int bitrate[] = {0,32000,40000,48000,56000,64000,80000,96000,
+                         112000,128000,160000,192000,224000,256000,320000,0};
+    //get first 4 bits to of the byte
+    unsigned char ucTest = ucHeaderByte & 0xF0;
+    //move them to the end
+    ucTest = ucTest >> 4;
+    //this is then a number 0 to 15 which correspond to the bit rates in the array
+     int unFrameBitRate = bitrate[(unsigned int)ucTest];
+    printf("\tBit Rate: %u\n",unFrameBitRate);
+    return unFrameBitRate;
+}
+
+ int findFrameSamplingFrequency(const unsigned char ucHeaderByte)
+{
+    unsigned int freq[] = {44100,48000,32000,00000};
+    //get first 2 bits to of the byte
+    unsigned char ucTest = ucHeaderByte & 0x0C;
+    ucTest = ucTest >> 6;
+    //then we have a number 0 to 3 corresponding to the freqs in the array
+     int unFrameSamplingFrequency = freq[(unsigned int)ucTest];
+    printf("Sampling Frequency: %u",unFrameSamplingFrequency);
+    return unFrameSamplingFrequency;
+}
+
+void printBits(size_t const size, void const * const ptr)
+{
+    unsigned char *b = (unsigned char*) ptr;
+    unsigned char byte;
+    int i, j;
+
+    for (i=size-1;i>=0;i--)
+    {
+        for (j=7;j>=0;j--)
+        {
+            byte = b[i] & (1<<j);
+            byte >>= j;
+            printf("%u", byte);
+        }
+    }
+    puts("");
+}
+
 static size_t gettagsize(int fd)
 {
   struct tagheader header;
@@ -70,15 +190,16 @@ static size_t gettagsize(int fd)
   if (strncmp(header.ID, "ID3", 3) != 0) {
     return -1;
   }
-
-  /*if (strncmp(header.version, "\03\00", 2) != 0) {
-    return -2;
-  }*/
-
-  unsync = (header.flags & 0x80) ? 1 : 0;
-  extend = (header.flags & 0x40) ? 1 : 0;    // I didn't handle extended in this version
+  printf("TAG size:%d,%d,%d,%d\n",header.size[0], header.size[1],header.size[2],header.size[3]);  
+  printf("tag id =%s, tag version = %d.%d\n", header.ID, header.version[0], header.version[1]);
   
-  sz = (header.size[0] & 0x7F) * 0x200000 + (header.size[1] & 0x7F) * 0x400 + (header.size[2] & 0x7F) * 0x80 + (header.size[3] & 0x7F);
+  // Flag 取高三位
+  unsync = (header.flags & 0x80) ? 1 : 0; //最高位:
+  extend = (header.flags & 0x40) ? 1 : 0; //次高位,表示是否有扩展头部 I didn't handle extended in this version
+  istest = (header.flags & 0x20) ? 1 : 0;
+  printf("unsync = %d, extend = %d, istest = %d\n\n", unsync, extend, istest);
+
+  sz = (header.size[0] & 0x7F) * 0x200000 + (header.size[1] & 0x7F) * 0x4000 + (header.size[2] & 0x7F) * 0x80 + (header.size[3] & 0x7F);
   return sz;
 }
 
@@ -100,7 +221,7 @@ static int doconv(char* inbuf, size_t inbytes, char* encode, char* outbuf, size_
   perror("iconv: ");
   return -1;
 }
-/*
+
 void parseold(int fd)
 {
   struct mp3id3v1 info;
@@ -128,7 +249,6 @@ void parseold(int fd)
     }
   }
 }
-*/
 
 int main(int argc, char* argv[])
 {
@@ -145,11 +265,18 @@ int main(int argc, char* argv[])
     perror("Open File: ");
     return -1;
   }
-  printf("File opened\n");
+  //printf("File opened\n");
+  struct stat stbuf;
+  if ((fstat(fd, &stbuf) != 0) || (!S_ISREG(stbuf.st_mode))) {
+      /* Handle error */
+    }
+      
+  int file_size = stbuf.st_size;
+  printf("file size = %d\n", file_size);
 
   size_t tagsize = gettagsize(fd);
   if (tagsize == -1) {            // The file is not an valid ID3 TAG mp3 file
-    //parseold(fd);                 // assume it's the old style mp3 file, the last 128 bytes hold information
+    parseold(fd);                 // assume it's the old style mp3 file, the last 128 bytes hold information
     printf("has no ID3\n");
     close(fd);
     return -1;
@@ -159,7 +286,7 @@ int main(int argc, char* argv[])
     close(fd);
     return -1;
   }
-  printf("tagsize = %d\n", tagsize);
+  printf("tagsize = %d\n\n", tagsize);
   struct frameheader header;
   int framesz = 0;
 
@@ -172,10 +299,13 @@ int main(int argc, char* argv[])
 
     start += sizeof(header);
     if(start > tagsize){
-      printf("has parsed all\n");
-      return 1;
+      start -= sizeof(header);
+      printf("\nhas parsed all\n");
+      break;
     }
-    framesz = header.size[0]*0x100000000 + header.size[1]*0x10000 + header.size[2]*0x100 + header.size[3];
+    //(header.size[0] & 0x7F) * 0x200000 + (header.size[1] & 0x7F) * 0x4000 + (header.size[2] & 0x7F) * 0x80 + (header.size[3] & 0x7F);
+    //framesz = header.size[0]*0x100000000 + header.size[1]*0x10000 + header.size[2]*0x100 + header.size[3];
+    framesz = header.size[0]*0x200000 + header.size[1]*0x4000 + header.size[2]*0x80 + header.size[3];
     start+=framesz;
 
     char* input = malloc(framesz);
@@ -183,10 +313,21 @@ int main(int argc, char* argv[])
       printf("error");
       return -1;
     }
+    int hasFound = 0;
+    for(int i = 0; i < 12; i++){
+      if(strncmp(header.frameid, tagid[i], 4) == 0){
+        hasFound = 1;
+      }
+    }
+    if(!hasFound){
+      break;
+    }
     if(strncmp(header.frameid, "APIC", 4) == 0){
-      printf("The %s is:\t\t Attach Picture, size = %d\n", header.frameid, framesz);
+      //printf("APIC:%d,%d,%d,%d\n",header.size[0], header.size[1],header.size[2],header.size[3]);
+      printf("The %s is:\t\tAttach Picture, size = %d\n", header.frameid, framesz);
       continue;
     }
+    int tempSize = framesz;
     framesz -= 1;   // framesz include the encode of the ID, so minus the encode byte; depend on the type of the tagid.
     if (framesz <= 0) continue;
     char* encode = (*input == 1)? "UTF-16" : "GB18030";  // The biggest problem is here, hard to know encode,so just guess
@@ -206,9 +347,102 @@ int main(int argc, char* argv[])
       perror("doconv: ");
       continue;
     }
-    printf("The %s is:\t\t%s, size = %d\n", header.frameid, result, framesz);
+    printf("The %s is:\t\t%s, size = %d\n", header.frameid, result, tempSize);
     free(result);
   }
-  close(fd);
+  printf("start is %d\n", start);
 
+  int position = lseek(fd, tagsize-10, 0);
+  printf("seek to get tag footer position = %d\n", position);
+
+  struct tagheader tagheader;
+  size_t sz;
+
+  if (read(fd, &tagheader, sizeof(tagheader)) < 0) {
+    perror("Read File: ");
+    exit(1);
+  }
+
+  if (strncmp(tagheader.ID, "3DI", 3) != 0) {
+    printf("not tag footer\n");
+    printf("data is %d,%d,%d\n",tagheader.ID[0],tagheader.ID[1],tagheader.ID[2]);
+  }else{
+    printf("TAG footer size:%d,%d,%d,%d\n",tagheader.size[0], tagheader.size[1],tagheader.size[2],tagheader.size[3]);  
+    printf("tag footer id =%s, tag version = %d.%d\n", tagheader.ID, tagheader.version[0], tagheader.version[1]);
+  }
+  
+  position = lseek(fd, tagsize-10, 0);
+  printf("seek to get audio frame , position = %d\n", position);
+
+  int nFrames, nFileSampleRate;
+  unsigned char ucHeaderByte1, ucHeaderByte2, ucHeaderByte3, ucHeaderByte4;
+  float fBitRateSum=0;
+syncWordSearch:
+  while( position < file_size)
+  {
+    if (read(fd, &ucHeaderByte1, sizeof(ucHeaderByte1)) < 0) {
+      perror("Read File: ");
+      exit(1);
+    }
+    position ++;
+    //printf("111:%d\n", ucHeaderByte1);
+    if( ucHeaderByte1 == 0xFF )
+    {
+      if (read(fd, &ucHeaderByte2, sizeof(ucHeaderByte2)) < 0) {
+        perror("Read File: ");
+        exit(1);
+      }
+      position ++;
+      unsigned char ucByte2LowerNibble = ucHeaderByte2 & 0xF0;
+      if( ucByte2LowerNibble == 0xF0 || ucByte2LowerNibble == 0xE0 )
+      {
+          ++nFrames;
+          printf("Found frame %d at offset = %ld B\n",nFrames, position);
+          //printf("Header Bits:\n");
+          //get the rest of the header:
+          if (read(fd, &ucHeaderByte3, sizeof(ucHeaderByte3)) < 0) {
+            perror("Read File: ");
+            exit(1);
+          }
+          position ++;
+          if (read(fd, &ucHeaderByte4, sizeof(ucHeaderByte4)) < 0) {
+            perror("Read File: ");
+            exit(1);
+          }
+          position ++;
+          //print the header:
+          //printBits(sizeof(ucHeaderByte1),&ucHeaderByte1);
+          //printBits(sizeof(ucHeaderByte2),&ucHeaderByte2);
+          //printBits(sizeof(ucHeaderByte3),&ucHeaderByte3);
+          //printBits(sizeof(ucHeaderByte4),&ucHeaderByte4);
+          //get header info:
+          int nFrameSamplingFrequency = findFrameSamplingFrequency(ucHeaderByte3);
+          int nFrameBitRate = findFrameBitRate(ucHeaderByte3);
+          int nMpegVersionAndLayer = findMpegVersionAndLayer(ucHeaderByte2);
+
+          if( nFrameBitRate==0 || nFrameSamplingFrequency == 0 || nMpegVersionAndLayer==0 )
+          {//if this happens then we must have found the sync word but it was not actually part of the header
+              --nFrames;
+              printf("Error: not a header\n\n");
+              goto syncWordSearch;
+          }
+          fBitRateSum += nFrameBitRate;
+          if(nFrames==1){ nFileSampleRate = nFrameSamplingFrequency; }
+          int nFramePadded = findFramePadding(ucHeaderByte3);
+          //calculate frame size:
+          int nFrameLength = (144 * (float)nFrameBitRate /
+                                            (float)nFrameSamplingFrequency ) + nFramePadded;
+          printf("\tFrame Length: %d Bytes \n\n", nFrameLength);
+
+          //lnPreviousFramePosition=ftell(ifMp3)-4; //the position of the first byte of this frame
+
+          //move file position by forward by frame length to bring it to next frame:
+          position = lseek(fd, position + nFrameLength-4, 0);
+      }
+    }
+  }
+  float fFileAveBitRate= fBitRateSum/nFrames;
+  printmp3details(nFrames,nFileSampleRate,fFileAveBitRate);
+
+  close(fd);
 }
